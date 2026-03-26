@@ -246,6 +246,23 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "message": "Failed to download media"
         }
 
+@mcp.tool()
+def sync_history() -> Dict[str, Any]:
+    """Trigger a WhatsApp history sync to fetch missed messages from the server.
+    Use this when messages appear to be missing or after a bridge restart.
+
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    import requests
+    try:
+        resp = requests.post("http://localhost:8080/api/sync", timeout=10)
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "message": "WhatsApp bridge not reachable on port 8080"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 if __name__ == "__main__":
     # Initialize and run the server
     mcp.run(transport='stdio')
