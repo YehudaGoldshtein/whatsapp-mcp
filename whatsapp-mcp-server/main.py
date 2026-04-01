@@ -12,7 +12,8 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    _resolve_phone_to_lid,
 )
 
 # Initialize FastMCP server
@@ -177,11 +178,19 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(recipient, message)
-    return {
+    success, status_message, jid = whatsapp_send_message(recipient, message)
+    result = {
         "success": success,
         "message": status_message
     }
+    if jid:
+        result["jid"] = jid
+        # Resolve LID from whatsmeow's lid_map if recipient was a phone number
+        phone = recipient.split("@")[0] if "@" in recipient else recipient
+        lid_user = _resolve_phone_to_lid(phone)
+        if lid_user:
+            result["lid"] = f"{lid_user}@lid"
+    return result
 
 @mcp.tool()
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:

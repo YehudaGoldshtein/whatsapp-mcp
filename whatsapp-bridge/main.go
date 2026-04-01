@@ -48,13 +48,21 @@ type MessageStore struct {
 
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
+	// Resolve store directory relative to executable, not working directory
+	exePath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get executable path: %v", err)
+	}
+	storeDir := filepath.Join(filepath.Dir(exePath), "store")
+
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	messagesDBPath := filepath.Join(storeDir, "messages.db")
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", messagesDBPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -193,6 +201,7 @@ func extractTextContent(msg *waProto.Message) string {
 type SendMessageResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+	JID     string `json:"jid,omitempty"`
 }
 
 // SendMessageRequest represents the request body for the send message API
@@ -203,9 +212,9 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string, string) {
 	if !client.IsConnected() {
-		return false, "Not connected to WhatsApp"
+		return false, "Not connected to WhatsApp", ""
 	}
 
 	// Create JID for recipient
@@ -219,7 +228,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		// Parse the JID string
 		recipientJID, err = types.ParseJID(recipient)
 		if err != nil {
-			return false, fmt.Sprintf("Error parsing JID: %v", err)
+			return false, fmt.Sprintf("Error parsing JID: %v", err), ""
 		}
 	} else {
 		// Create JID from phone number
@@ -236,7 +245,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
-			return false, fmt.Sprintf("Error reading media file: %v", err)
+			return false, fmt.Sprintf("Error reading media file: %v", err), ""
 		}
 
 		// Determine media type and mime type based on file extension
@@ -285,7 +294,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		// Upload media to WhatsApp servers
 		resp, err := client.Upload(context.Background(), mediaData, mediaType)
 		if err != nil {
-			return false, fmt.Sprintf("Error uploading media: %v", err)
+			return false, fmt.Sprintf("Error uploading media: %v", err), ""
 		}
 
 		fmt.Println("Media uploaded", resp)
@@ -315,7 +324,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 					seconds = analyzedSeconds
 					waveform = analyzedWaveform
 				} else {
-					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err)
+					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err), ""
 				}
 			} else {
 				fmt.Printf("Not an Ogg Opus file: %s\n", mimeType)
@@ -365,10 +374,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	_, err = client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
-		return false, fmt.Sprintf("Error sending message: %v", err)
+		return false, fmt.Sprintf("Error sending message: %v", err), ""
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient)
+	return true, fmt.Sprintf("Message sent to %s", recipient), recipientJID.String()
 }
 
 // Extract media info from a message
@@ -706,7 +715,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message, jid := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -720,6 +729,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(SendMessageResponse{
 			Success: success,
 			Message: message,
+			JID:     jid,
 		})
 	})
 
@@ -804,9 +814,17 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			})
 			return
 		}
+
+		// Also explicitly request history sync from WhatsApp servers
+		go func() {
+			// Give reconnect a moment to stabilize
+			time.Sleep(10 * time.Second)
+			requestHistorySync(client)
+		}()
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"message": "Reconnected to WhatsApp, history sync should follow automatically",
+			"message": "Reconnected and requested explicit history sync from WhatsApp servers",
 		})
 	})
 
@@ -830,13 +848,22 @@ func main() {
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
+	// Resolve store directory relative to executable, not working directory
+	exePath, err := os.Executable()
+	if err != nil {
+		logger.Errorf("Failed to get executable path: %v", err)
+		return
+	}
+	storeDir := filepath.Join(filepath.Dir(exePath), "store")
+
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		return
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	whatsappDBPath := filepath.Join(storeDir, "whatsapp.db")
+	container, err := sqlstore.New(context.Background(), "sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", whatsappDBPath), dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
@@ -1195,7 +1222,7 @@ func requestHistorySync(client *whatsmeow.Client) {
 		return
 	}
 
-	if client.Store.ID == nil {
+	if client.Store == nil || client.Store.ID == nil {
 		fmt.Println("Client is not logged in. Please scan the QR code first.")
 		return
 	}

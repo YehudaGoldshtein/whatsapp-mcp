@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import os.path
@@ -205,21 +205,30 @@ def list_messages(
         # Add filters
         if after:
             try:
-                after = datetime.fromisoformat(after)
+                after_dt = datetime.fromisoformat(after)
+                # Convert to UTC epoch and use SQLite strftime for comparison
+                if after_dt.tzinfo is not None:
+                    after_epoch = after_dt.timestamp()
+                else:
+                    after_epoch = after_dt.replace(tzinfo=timezone.utc).timestamp()
             except ValueError:
                 raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
-            
-            where_clauses.append("messages.timestamp > ?")
-            params.append(after)
+
+            where_clauses.append("CAST(strftime('%s', messages.timestamp) AS INTEGER) > ?")
+            params.append(int(after_epoch))
 
         if before:
             try:
-                before = datetime.fromisoformat(before)
+                before_dt = datetime.fromisoformat(before)
+                if before_dt.tzinfo is not None:
+                    before_epoch = before_dt.timestamp()
+                else:
+                    before_epoch = before_dt.replace(tzinfo=timezone.utc).timestamp()
             except ValueError:
                 raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
-            
-            where_clauses.append("messages.timestamp < ?")
-            params.append(before)
+
+            where_clauses.append("CAST(strftime('%s', messages.timestamp) AS INTEGER) < ?")
+            params.append(int(before_epoch))
 
         if sender_phone_number:
             where_clauses.append("messages.sender = ?")
@@ -739,33 +748,33 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if 'conn' in locals():
             conn.close()
 
-def send_message(recipient: str, message: str) -> Tuple[bool, str]:
+def send_message(recipient: str, message: str) -> Tuple[bool, str, str]:
     try:
         # Validate input
         if not recipient:
-            return False, "Recipient must be provided"
-        
+            return False, "Recipient must be provided", ""
+
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
             "recipient": recipient,
             "message": message,
         }
-        
+
         response = requests.post(url, json=payload)
-        
+
         # Check if the request was successful
         if response.status_code == 200:
             result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
+            return result.get("success", False), result.get("message", "Unknown response"), result.get("jid", "")
         else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-            
+            return False, f"Error: HTTP {response.status_code} - {response.text}", ""
+
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, f"Request error: {str(e)}", ""
     except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+        return False, f"Error parsing response: {response.text}", ""
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        return False, f"Unexpected error: {str(e)}", ""
 
 def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
     try:
