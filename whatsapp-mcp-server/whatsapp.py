@@ -231,8 +231,20 @@ def list_messages(
             params.append(int(before_epoch))
 
         if sender_phone_number:
-            where_clauses.append("messages.sender = ?")
-            params.append(sender_phone_number)
+            # Resolve phone to chat JID (covers both sender and chat filtering)
+            # This way it returns ALL messages in the chat, not just from that sender
+            lid = _resolve_phone_to_lid(sender_phone_number)
+            phone_clean = ''.join(c for c in sender_phone_number if c.isdigit())
+            phone_jid = f"{phone_clean}@s.whatsapp.net" if phone_clean else None
+            lid_jid = f"{lid}@lid" if lid else None
+            jid_options = [j for j in [phone_jid, lid_jid] if j]
+            if jid_options:
+                placeholders = " OR ".join(["messages.chat_jid = ?"] * len(jid_options))
+                where_clauses.append(f"({placeholders})")
+                params.extend(jid_options)
+            else:
+                where_clauses.append("messages.sender = ?")
+                params.append(sender_phone_number)
             
         if chat_jid:
             # Support both @s.whatsapp.net and @lid formats seamlessly
