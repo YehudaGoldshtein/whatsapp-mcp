@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -30,6 +32,22 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+var bridgeLog *log.Logger
+
+func initLogger() {
+	logDir := filepath.Join("..", "..", "logs", "whatsapp", "bridge")
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "bridge.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("Failed to open log file %s: %v, logging to stdout only\n", logPath, err)
+		bridgeLog = log.New(os.Stdout, "[bridge] ", log.LstdFlags)
+		return
+	}
+	multi := io.MultiWriter(os.Stdout, f)
+	bridgeLog = log.New(multi, "[bridge] ", log.LstdFlags)
+}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -297,7 +315,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			return false, fmt.Sprintf("Error uploading media: %v", err), ""
 		}
 
-		fmt.Println("Media uploaded", resp)
+		bridgeLog.Println("Media uploaded", resp)
 
 		// Create the appropriate message type based on media type
 		switch mediaType {
@@ -327,7 +345,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err), ""
 				}
 			} else {
-				fmt.Printf("Not an Ogg Opus file: %s\n", mimeType)
+				bridgeLog.Printf("Not an Ogg Opus file: %s", mimeType)
 			}
 
 			msg.AudioMessage = &waProto.AudioMessage{
@@ -371,13 +389,17 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
+	bridgeLog.Printf("Sending message to recipientJID=%s (User=%s, Server=%s)", recipientJID.String(), recipientJID.User, recipientJID.Server)
 	_, err = client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
+		bridgeLog.Printf("SendMessage error: %v", err)
 		return false, fmt.Sprintf("Error sending message: %v", err), ""
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient), recipientJID.String()
+	jidStr := recipientJID.String()
+	bridgeLog.Printf("SendMessage success, returning jid=%q", jidStr)
+	return true, fmt.Sprintf("Message sent to %s", recipient), jidStr
 }
 
 // Extract media info from a message
@@ -717,6 +739,8 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		// Send the message
 		success, message, jid := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
+		bridgeLog.Printf("sendWhatsAppMessage returned: success=%v, message=%q, jid=%q", success, message, jid)
+
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
@@ -726,11 +750,14 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Send response
-		json.NewEncoder(w).Encode(SendMessageResponse{
+		resp := SendMessageResponse{
 			Success: success,
 			Message: message,
 			JID:     jid,
-		})
+		}
+		respBytes, _ := json.Marshal(resp)
+		bridgeLog.Printf("API /send response: %s", string(respBytes))
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	// Handler for downloading media
@@ -841,6 +868,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 }
 
 func main() {
+	initLogger()
+	bridgeLog.Println("Initializing WhatsApp bridge...")
+
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")

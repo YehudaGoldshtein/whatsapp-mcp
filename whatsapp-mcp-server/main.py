@@ -1,5 +1,20 @@
+import logging
+import os
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+
+# Set up file logger
+log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs", "whatsapp", "server")
+os.makedirs(log_dir, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, "server.log")),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger("whatsapp-mcp")
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -178,7 +193,9 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
+    log.info(f"send_message called: recipient={recipient}")
     success, status_message, jid = whatsapp_send_message(recipient, message)
+    log.info(f"whatsapp_send_message returned: success={success}, status={status_message}, jid={repr(jid)}")
     result = {
         "success": success,
         "message": status_message
@@ -188,8 +205,10 @@ def send_message(
         # Resolve LID from whatsmeow's lid_map if recipient was a phone number
         phone = recipient.split("@")[0] if "@" in recipient else recipient
         lid_user = _resolve_phone_to_lid(phone)
+        log.info(f"LID resolution for {phone}: {repr(lid_user)}")
         if lid_user:
             result["lid"] = f"{lid_user}@lid"
+    log.info(f"send_message returning: {result}")
     return result
 
 @mcp.tool()
