@@ -842,16 +842,17 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
-		// Also explicitly request history sync from WhatsApp servers
-		go func() {
-			// Give reconnect a moment to stabilize
-			time.Sleep(10 * time.Second)
-			requestHistorySync(client)
-		}()
+		// NOTE: explicit requestHistorySync(client) call was removed — it passed
+		// a nil *types.MessageInfo anchor to whatsmeow's BuildHistorySyncRequest,
+		// which panics on nil deref in the current whatsmeow version. The reconnect
+		// above is sufficient to trigger automatic history sync. See requestHistorySync
+		// below — it needs a real MessageInfo anchor from the local message store
+		// before it can be re-enabled. TODO(history-sync): fetch latest MessageInfo
+		// from SQLite and pass it into BuildHistorySyncRequest.
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"message": "Reconnected and requested explicit history sync from WhatsApp servers",
+			"message": "Reconnected — history sync will stream in automatically",
 		})
 	})
 
@@ -1240,7 +1241,14 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 	fmt.Printf("History sync complete. Stored %d messages.\n", syncedCount)
 }
 
-// Request history sync from the server
+// Request history sync from the server.
+//
+// IMPORTANT: whatsmeow's BuildHistorySyncRequest requires a non-nil
+// *types.MessageInfo "anchor" — it panics with a nil-deref in send.go:560
+// otherwise. Until we wire up a real anchor from the local SQLite message
+// store, this function refuses to run and logs a clear error.
+// TODO(history-sync): load the most recent MessageInfo from messageStore
+// and pass it as the anchor argument instead of nil.
 func requestHistorySync(client *whatsmeow.Client) {
 	if client == nil {
 		fmt.Println("Client is not initialized. Cannot request history sync.")
@@ -1257,23 +1265,30 @@ func requestHistorySync(client *whatsmeow.Client) {
 		return
 	}
 
-	// Build and send a history sync request
-	historyMsg := client.BuildHistorySyncRequest(nil, 100)
-	if historyMsg == nil {
-		fmt.Println("Failed to build history sync request.")
-		return
-	}
+	// SAFETY: refuse to call BuildHistorySyncRequest until a real MessageInfo
+	// anchor is available. Passing nil crashes whatsmeow in send.go:560.
+	// Reconnect-based auto-sync is used instead (see /api/sync REST handler).
+	fmt.Println("requestHistorySync: disabled — needs MessageInfo anchor from local store (see TODO above). Use reconnect-based sync instead.")
 
-	_, err := client.SendMessage(context.Background(), types.JID{
-		Server: "s.whatsapp.net",
-		User:   "status",
-	}, historyMsg)
-
-	if err != nil {
-		fmt.Printf("Failed to request history sync: %v\n", err)
-	} else {
-		fmt.Println("History sync requested. Waiting for server response...")
-	}
+	// ORIGINAL BROKEN IMPLEMENTATION — kept as a reference for the proper fix.
+	// To re-enable: delete the Println safety line above, uncomment the block
+	// below, and replace the nil argument to BuildHistorySyncRequest with a
+	// *types.MessageInfo built from the most recent row in the messages table.
+	//
+	//	historyMsg := client.BuildHistorySyncRequest(nil, 100)
+	//	if historyMsg == nil {
+	//		fmt.Println("Failed to build history sync request.")
+	//		return
+	//	}
+	//	_, err := client.SendMessage(context.Background(), types.JID{
+	//		Server: "s.whatsapp.net",
+	//		User:   "status",
+	//	}, historyMsg)
+	//	if err != nil {
+	//		fmt.Printf("Failed to request history sync: %v\n", err)
+	//	} else {
+	//		fmt.Println("History sync requested. Waiting for server response...")
+	//	}
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file
