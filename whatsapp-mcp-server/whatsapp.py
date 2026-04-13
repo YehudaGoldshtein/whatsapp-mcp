@@ -189,18 +189,23 @@ def list_messages(
     page: int = 0,
     include_context: bool = True,
     context_before: int = 1,
-    context_after: int = 1
+    context_after: int = 1,
+    include_groups: bool = False
 ) -> List[Message]:
     """Get messages matching the specified criteria with optional context."""
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
         # Build base query
         query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
         query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
         where_clauses = []
         params = []
+
+        # Exclude group chats by default
+        if not include_groups:
+            where_clauses.append("chats.jid NOT LIKE '%@g.us'")
         
         # Add filters
         if after:

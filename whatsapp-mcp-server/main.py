@@ -55,10 +55,11 @@ def list_messages(
     page: int = 0,
     include_context: bool = True,
     context_before: int = 1,
-    context_after: int = 1
+    context_after: int = 1,
+    include_groups: bool = False
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp messages matching specified criteria with optional context.
-    
+
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
@@ -70,6 +71,7 @@ def list_messages(
         include_context: Whether to include messages before and after matches (default True)
         context_before: Number of messages to include before each match (default 1)
         context_after: Number of messages to include after each match (default 1)
+        include_groups: Whether to include group chat messages (default False)
     """
     messages = whatsapp_list_messages(
         after=after,
@@ -81,7 +83,8 @@ def list_messages(
         page=page,
         include_context=include_context,
         context_before=context_before,
-        context_after=context_after
+        context_after=context_after,
+        include_groups=include_groups
     )
     return messages
 
